@@ -2,145 +2,102 @@ using System;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Web.Script.Serialization;
-using System.Diagnostics;
 
-[ComVisible(true)]
-[ClassInterface(ClassInterfaceType.AutoDispatch)]
-[Guid("A4B35606-B68E-4B54-A438-E2DD1B139022")]
-[ProgId("Stdin.Reader")]
-public class StdinReader
-{
-    private IntPtr inputHandle;
+using Win32;
+using static Win32.Kernel32;
 
-    private const uint STD_INPUT_HANDLE = unchecked((uint)-10);
-    private const uint FILE_TYPE_CHAR   = 0x0002;
-    private const uint FILE_TYPE_PIPE   = 0x0003;
-    private const uint FILE_TYPE_DISK   = 0x0001;
-    private static readonly IntPtr INVALID_HANDLE_VALUE = new IntPtr(-1);
+namespace IO {
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern IntPtr GetStdHandle(uint nStdHandle);
+    [ComVisible(true)]
+    [ClassInterface(ClassInterfaceType.AutoDispatch)]
+    [Guid("A4B35606-B68E-4B54-A438-E2DD1B139022")]
+    [ProgId("Stdin.Reader")]
+    public class StdinReader {
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern uint GetFileType(IntPtr hFile);
+        private IntPtr inputHandle;
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool PeekNamedPipe(
-        IntPtr handle,
-        byte[] lpBuffer,
-        uint nBufferSize,
-        out uint lpBytesRead,
-        out uint lpTotalBytesAvail,
-        out uint lpBytesLeftThisMessage);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool ReadFile(
-        IntPtr hFile,
-        byte[] lpBuffer,
-        uint nNumberOfBytesToRead,
-        out uint lpNumberOfBytesRead,
-        IntPtr lpOverlapped);
-
-    public StdinReader()
-    {
-        inputHandle = GetStdHandle(STD_INPUT_HANDLE);
-    }
-
-    public string ReadStdin(int timeoutMilliseconds = 500, int maxChunkSizeKB = 64)
-    {
-        var timeout = TimeSpan.FromMilliseconds(timeoutMilliseconds);
-        var sw = Stopwatch.StartNew();
-        var sb = new StringBuilder();
-        bool inputReceived = false;
-        uint chunkSize = (uint)maxChunkSizeKB * 1024;
-        byte[] buffer = new byte[chunkSize];
-
-        if (inputHandle == IntPtr.Zero)
-        {
-            return Serialize(new
-            {
-                error = "NoStdin",
-                hint = "stdin not available. Use cscript.exe or pipe from cmd/PowerShell."
-            });
+        public StdinReader() {
+            inputHandle = GetStdHandle(STD_INPUT_HANDLE);
         }
 
-        if (inputHandle == INVALID_HANDLE_VALUE)
-        {
-            return Serialize(new
-            {
-                error = "InvalidHandle",
-                code = Marshal.GetLastWin32Error()
-            });
-        }
+        public string ReadStdin(object timeoutMillisecondsParam = null) {
+            int timeoutMilliseconds = 60000;
 
-        uint fileType = GetFileType(inputHandle);
-        if (fileType == FILE_TYPE_CHAR)
-            return Serialize(new { error = "ConsoleInputNotSupported" });
+            if (timeoutMillisecondsParam != null && timeoutMillisecondsParam != DBNull.Value && timeoutMillisecondsParam.GetType() != typeof(System.Reflection.Missing)) {
+                try {
+                    timeoutMilliseconds = Convert.ToInt32(timeoutMillisecondsParam);
+                } catch (Exception) {
+                    // Ignore conversion errors and use the default
+                }
+            }
 
-        bool isPipe = fileType == FILE_TYPE_PIPE;
-        bool isFile = fileType == FILE_TYPE_DISK;
+            var timeout = TimeSpan.FromMilliseconds(timeoutMilliseconds);
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            var stringBuilder = new StringBuilder();
+            bool inputStarted = false;
 
-        if (!isPipe && !isFile)
-            return Serialize(new { error = "UnsupportedHandleType", fileType });
+            if (inputHandle == INVALID_HANDLE_VALUE) {
+                return Serialize(new { error = "InvalidHandle", code = Marshal.GetLastWin32Error() });
+            }
 
-        while (sw.Elapsed < timeout)
-        {
-            uint bytesToRead = chunkSize;
-            bool hasData = false;
+            uint fileType = GetFileType(inputHandle);
 
-            if (isPipe)
-            {
-                if (PeekNamedPipe(inputHandle, null, 0, out _, out uint avail, out _))
-                {
-                    if (avail > 0)
-                    {
-                        hasData = true;
-                        bytesToRead = Math.Min(avail, chunkSize);
+            if (fileType == FILE_TYPE_CHAR) {
+                return Serialize(new { error = "ConsoleInputNotSupported" });
+            } else if (fileType != FILE_TYPE_PIPE) {
+                return Serialize(new { error = "UnsupportedHandleType", fileType = fileType });
+            }
+
+            while (stopwatch.Elapsed < timeout) {
+                uint totalBytesAvail = 0;
+
+                if (PeekNamedPipe(inputHandle, null, 0, out _, out totalBytesAvail, out _)) {
+                    if (totalBytesAvail > 0) {
+                        inputStarted = true;
+                        uint bytesToRead = totalBytesAvail;
+                        byte[] buffer = new byte[bytesToRead];
+                        uint actualBytesRead = 0;
+
+                        if (ReadFile(inputHandle, buffer, (uint)buffer.Length, out actualBytesRead, IntPtr.Zero)) {
+                            stringBuilder.Append(Encoding.Default.GetString(buffer, 0, (int)actualBytesRead));
+                            stopwatch.Reset();
+                            stopwatch.Start();
+                        } else {
+                            return Serialize(new { error = new { type = "ReadError", code = Marshal.GetLastWin32Error() } });
+                        }
+                    } else if (inputStarted) {
+                        return Serialize(new { value = stringBuilder.ToString() });
                     }
-                    else if (inputReceived)
-                        break;
+                } else {
+                    var lastError = Marshal.GetLastWin32Error();
+                    if (lastError == 109) {
+                        if (stringBuilder.Length > 0) {
+                            return Serialize(new { value = stringBuilder.ToString() });
+                        } else {
+                            return Serialize(new { error = "PipeClosed" });
+                        }
+                    }
+                    if (stringBuilder.Length > 0) {
+                        return Serialize(new { value = stringBuilder.ToString() });
+                    }
+                    return Serialize(new { error = new { type = "PipeError", code = lastError } });
                 }
-                else
-                {
-                    int err = Marshal.GetLastWin32Error();
-                    if (err == 109) break;
+
+                if (!inputStarted) {
+                    System.Threading.Thread.Sleep(10);
                 }
-            }
-            else
-            {
-                hasData = true;
             }
 
-            if (hasData)
-            {
-                if (ReadFile(inputHandle, buffer, bytesToRead, out uint read, IntPtr.Zero))
-                {
-                    if (read == 0) break;
-                    sb.Append(Encoding.UTF8.GetString(buffer, 0, (int)read));
-                    inputReceived = true;
-                }
-                else
-                {
-                    return Serialize(new
-                    {
-                        error = new { type = "ReadError", code = Marshal.GetLastWin32Error() }
-                    });
-                }
+            if (stringBuilder.Length > 0) {
+                return Serialize(new { value = stringBuilder.ToString() });
             }
-            else if (!inputReceived)
-            {
-                System.Threading.Thread.Sleep(10);
-            }
+
+            return Serialize(new { error = "Timeout" });
         }
 
-        return (sb.Length > 0
-            ? Serialize(new { value = sb.ToString() })
-            : Serialize(new { error = "Timeout" }));
-    }
-
-    private string Serialize(object obj)
-    {
-        var serializer = new JavaScriptSerializer();
-        return serializer.Serialize(obj);
+        private string Serialize(object obj) {
+            var serializer = new JavaScriptSerializer();
+            return serializer.Serialize(obj);
+        }
     }
 }
