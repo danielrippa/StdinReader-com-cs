@@ -3,8 +3,8 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Web.Script.Serialization;
 
-using Win32;
-using static Win32.Kernel32;
+using static IO.Win32;
+using static IO.Kernel32;
 
 namespace IO {
 
