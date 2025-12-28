@@ -16,5 +16,18 @@ namespace IO {
         [DllImport("kernel32.dll", SetLastError = true)]
         public static extern bool ReadFile(IntPtr hFile, byte[] lpBuffer, uint nNumberOfBytesToRead, 
             out uint lpNumberOfBytesRead, IntPtr lpOverlapped);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Auto)]
+        public static extern void OutputDebugString(string message);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern bool SetNamedPipeHandleState(IntPtr hNamedPipe, ref uint lpMode, IntPtr lpMaxCollectionCount, IntPtr lpCollectDataTimeout);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern bool WriteFile(IntPtr hFile, byte[] lpBuffer, uint nNumberOfBytesToWrite, 
+            out uint lpNumberOfBytesWritten, IntPtr lpOverlapped);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern bool WaitForSingleObject(IntPtr hHandle, uint dwMilliseconds);
     }
 }
